@@ -1,0 +1,14 @@
+[package]
+name = "rummelplatz"
+version = "0.1.0"
+edition = "2021"
+description = "A low level library to interact with the io-uring api"
+
+[dependencies]
+tracing = "0.1.40"
+io-uring = { git = "https://github.com/bits0rcerer/io-uring", branch = "msg_ring_pass_flags" }
+take_mut = "0.2.2"
+thiserror = "1.0.51"
+
+[dev-dependencies]
+tracing-subscriber = "0.3.18"
