@@ -1,12 +1,11 @@
 use std::error::Error;
 use std::num::NonZeroU32;
-use std::os::fd::AsRawFd;
 
 use io_uring::squeue::Entry;
 use io_uring::types::Timespec;
 use tracing::{info, Level};
 
-use rummelplatz::{io_uring, ControlFlow, RingOperation, SubmissionQueueSubmitter};
+use rummelplatz::{ring, ControlFlow, RingOperation, SubmissionQueueSubmitter};
 
 const TIMEOUT: Timespec = Timespec::new().sec(1);
 
@@ -66,7 +65,7 @@ impl RingOperation for TimeoutOp {
     }
 }
 
-io_uring! {
+ring! {
     test_ring,
     timout_op: super::TimeoutOp
 }

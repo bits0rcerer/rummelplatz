@@ -62,9 +62,10 @@ Checkout this [very basic example](examples/basic.rs).
     ```
 2. Create an IoUring with your RingOperation
    ```rust
-    rummelplatz::io_uring! {
+    rummelplatz::ring! {
         my_ring,
-        my_ring_op: super::MyRingOp
+        my_ring_op: super::MyRingOp,
+        my_other_op: super::MyOtherRingOp
     }
    ```
 3. Run it

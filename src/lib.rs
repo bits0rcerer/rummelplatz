@@ -4,6 +4,7 @@ use std::iter::zip;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
+pub use io_uring;
 use io_uring::cqueue::Entry;
 use io_uring::squeue::{EntryMarker, PushError};
 use io_uring::SubmissionQueue;
@@ -182,7 +183,7 @@ impl<'a, 'b, 'c, 'd, D: Clone, W: Fn(&mut E, D), E: EntryMarker>
 }
 
 #[macro_export]
-macro_rules! io_uring {
+macro_rules! ring {
     ($ring_name:ident, $($ring_op_name:ident: $ring_op:path),+) => {
         pub mod $ring_name {
             use std::num::{NonZeroU32, NonZeroUsize};
@@ -190,9 +191,9 @@ macro_rules! io_uring {
             use std::fmt::{Debug, Formatter};
             use std::marker::PhantomData;
             use std::os::fd::{AsRawFd, RawFd};
-            use io_uring::squeue::PushError;
-            use io_uring::types::Timespec;
             use tracing::{debug, error, trace, warn};
+            use $crate::io_uring::squeue::PushError;
+            use $crate::io_uring::types::Timespec;
             use $crate::{ControlFlow, RingOperation, SubmissionQueueSubmitter};
 
             const SHUTDOWN_TIMEOUT: Timespec = Timespec::new().sec(5);
@@ -253,8 +254,8 @@ macro_rules! io_uring {
 
             pub struct Ring {
                 inflight_requests: usize,
-                ring: io_uring::IoUring,
-                backlog: VecDeque<Box<[io_uring::squeue::Entry]>>,
+                ring: $crate::io_uring::IoUring,
+                backlog: VecDeque<Box<[$crate::io_uring::squeue::Entry]>>,
                 backlog_limit: Option<NonZeroUsize>,
                 $($ring_op_name: $ring_op),+,
             }
@@ -278,8 +279,8 @@ macro_rules! io_uring {
 
             impl Ring
             {
-                pub fn new_raw_ring(ring_size: NonZeroU32) -> std::io::Result<io_uring::IoUring> {
-                    io_uring::IoUring::builder()
+                pub fn new_raw_ring(ring_size: NonZeroU32) -> std::io::Result<$crate::io_uring::IoUring> {
+                    $crate::io_uring::IoUring::builder()
                         .setup_single_issuer()
                         .setup_coop_taskrun()
                         .setup_defer_taskrun()
@@ -287,7 +288,7 @@ macro_rules! io_uring {
                 }
 
                 #[tracing::instrument(skip_all)]
-                pub fn new(ring: io_uring::IoUring, backlog_limit: Option<NonZeroUsize>, $($ring_op_name: $ring_op),+) -> Self {
+                pub fn new(ring: $crate::io_uring::IoUring, backlog_limit: Option<NonZeroUsize>, $($ring_op_name: $ring_op),+) -> Self {
                     Self {
                         inflight_requests: 0,
                         ring,
@@ -298,7 +299,7 @@ macro_rules! io_uring {
                 }
 
                 #[inline]
-                fn sqe_wrapper(e: &mut io_uring::squeue::Entry, user_data: UserData) {
+                fn sqe_wrapper(e: &mut $crate::io_uring::squeue::Entry, user_data: UserData) {
                     take_mut::take(e, |e| e.user_data(user_data.into()));
                 }
 
@@ -339,7 +340,7 @@ macro_rules! io_uring {
                             cq.sync();
                             'completion_loop: for cqe in cq.by_ref() {
                                 trace!("> CQE: {cqe:?}");
-                                if !io_uring::cqueue::more(cqe.flags()) {
+                                if !$crate::io_uring::cqueue::more(cqe.flags()) {
                                     self.inflight_requests -= 1;
                                 }
 
@@ -392,14 +393,14 @@ macro_rules! io_uring {
 
                     debug!("shutting down ring...");
                     unsafe {
-                        let cancel = io_uring::opcode::AsyncCancel2::new(io_uring::types::CancelBuilder::any())
+                        let cancel = $crate::io_uring::opcode::AsyncCancel2::new($crate::io_uring::types::CancelBuilder::any())
                             .build()
                             .user_data(0);
                         sq.push(&cancel)?;
 
                         let cancel_timeout = match self.inflight_requests {
-                            0 => io_uring::opcode::Nop::new().build(),
-                            n => io_uring::opcode::Timeout::new(&SHUTDOWN_TIMEOUT)
+                            0 => $crate::io_uring::opcode::Nop::new().build(),
+                            n => $crate::io_uring::opcode::Timeout::new(&SHUTDOWN_TIMEOUT)
                                     .count(n as u32)
                                     .build()
                         }.user_data(UserData::Cancel(u64::MAX).into());
@@ -416,7 +417,7 @@ macro_rules! io_uring {
                             cq.sync();
                             for cqe in cq.by_ref() {
                                 trace!("> CQE: {cqe:?}");
-                                if !io_uring::cqueue::more(cqe.flags()) {
+                                if !$crate::io_uring::cqueue::more(cqe.flags()) {
                                     self.inflight_requests -= 1;
                                 }
 
