@@ -146,13 +146,13 @@ impl<'a, 'b, 'c, 'd, D, W: Fn(&mut E, D), E: EntryMarker>
 }
 
 #[allow(dead_code)]
-impl<'a, 'b, 'c, 'd, D: Clone, W: Fn(&mut E, D), E: EntryMarker>
+impl<'a, 'b, 'c, 'd, D, W: Fn(&mut E, D), E: EntryMarker>
     SubmissionQueueSubmitter<'a, 'b, 'c, 'd, D, W, E>
 {
     #[inline]
-    pub fn push_slice(&mut self, mut entries: Box<[E]>, data: &[D]) -> Result<(), PushError> {
-        for (entry, data) in zip(entries.iter_mut(), data.iter()) {
-            (self.wrapper)(entry, data.clone());
+    pub fn push_slice(&mut self, mut entries: Box<[E]>, data: Box<[D]>) -> Result<(), PushError> {
+        for (entry, data) in zip(entries.iter_mut(), Vec::from(data).into_iter()) {
+            (self.wrapper)(entry, data);
         }
 
         unsafe { self.push_slice_raw(entries) }
