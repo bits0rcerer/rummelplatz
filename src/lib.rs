@@ -19,6 +19,8 @@ pub enum ControlFlow<Warn, Error> {
     Error(Error),
 }
 
+type CompletionResult<W, E, D> = (ControlFlow<W, E>, Option<D>);
+
 pub trait RingOperation: Debug {
     type RingData;
     type SetupError;
@@ -35,10 +37,7 @@ pub trait RingOperation: Debug {
         completion_entry: Entry,
         ring_data: Self::RingData,
         submitter: SubmissionQueueSubmitter<Self::RingData, W>,
-    ) -> (
-        ControlFlow<Self::ControlFlowWarn, Self::ControlFlowError>,
-        Option<Self::RingData>,
-    );
+    ) -> CompletionResult<Self::ControlFlowWarn, Self::ControlFlowError, Self::RingData>;
     fn on_teardown_completion<W: Fn(&mut io_uring::squeue::Entry, Self::RingData)>(
         &mut self,
         completion_entry: Entry,
@@ -47,37 +46,31 @@ pub trait RingOperation: Debug {
     ) -> Result<(), Self::TeardownError>;
 }
 
-pub const IORING_CQE_F_MORE: u32 = 2;
-
 pub struct SubmissionQueueSubmitter<
     'a,
     'b,
     'c,
-    'd,
     D,
     W: Fn(&mut E, D),
     E: EntryMarker = io_uring::squeue::Entry,
 > {
-    inflight_requests: &'a mut usize,
-    sq: &'b mut SubmissionQueue<'c, E>,
-    backlog: &'d mut VecDeque<Box<[E]>>,
+    sq: &'a mut SubmissionQueue<'b, E>,
+    backlog: &'c mut VecDeque<Box<[E]>>,
     backlog_limit: Option<NonZeroUsize>,
     wrapper: W,
     marker: PhantomData<D>,
 }
 
-impl<'a, 'b, 'c, 'd, D, W: Fn(&mut E, D), E: EntryMarker>
-    SubmissionQueueSubmitter<'a, 'b, 'c, 'd, D, W, E>
+impl<'a, 'b, 'c, D, W: Fn(&mut E, D), E: EntryMarker>
+    SubmissionQueueSubmitter<'a, 'b, 'c, D, W, E>
 {
     pub fn new(
-        inflight_requests: &'a mut usize,
-        sq: &'b mut SubmissionQueue<'c, E>,
-        backlog: &'d mut VecDeque<Box<[E]>>,
+        sq: &'a mut SubmissionQueue<'b, E>,
+        backlog: &'c mut VecDeque<Box<[E]>>,
         backlog_limit: Option<NonZeroUsize>,
         wrapper: W,
     ) -> Self {
         Self {
-            inflight_requests,
             sq,
             backlog,
             backlog_limit,
@@ -91,6 +84,8 @@ impl<'a, 'b, 'c, 'd, D, W: Fn(&mut E, D), E: EntryMarker>
         self.push_multiple([entry], [data])
     }
 
+    /// # Safety
+    /// The caller must ensure that the userdata is valid and can be understood by rummelplatz.
     #[inline]
     pub unsafe fn push_raw(&mut self, entry: E) -> Result<(), PushError> {
         self.push_multiple_raw([entry])
@@ -109,6 +104,8 @@ impl<'a, 'b, 'c, 'd, D, W: Fn(&mut E, D), E: EntryMarker>
         unsafe { self.push_multiple_raw(entries) }
     }
 
+    /// # Safety
+    /// The caller must ensure that userdata of all entries are valid and can be understood by rummelplatz.
     #[inline]
     pub unsafe fn push_multiple_raw<const N: usize>(
         &mut self,
@@ -117,10 +114,7 @@ impl<'a, 'b, 'c, 'd, D, W: Fn(&mut E, D), E: EntryMarker>
         trace!("push sqes: {entries:?}");
 
         match self.sq.push_multiple(entries.as_slice()) {
-            Ok(()) => {
-                *self.inflight_requests += entries.len();
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(e) => {
                 warn!(
                     "exceeding ring submission queue, using backlog... (may degrade performance)"
@@ -146,8 +140,8 @@ impl<'a, 'b, 'c, 'd, D, W: Fn(&mut E, D), E: EntryMarker>
 }
 
 #[allow(dead_code)]
-impl<'a, 'b, 'c, 'd, D, W: Fn(&mut E, D), E: EntryMarker>
-    SubmissionQueueSubmitter<'a, 'b, 'c, 'd, D, W, E>
+impl<'a, 'b, 'c, D, W: Fn(&mut E, D), E: EntryMarker>
+    SubmissionQueueSubmitter<'a, 'b, 'c, D, W, E>
 {
     #[inline]
     pub fn push_slice(&mut self, mut entries: Box<[E]>, data: Box<[D]>) -> Result<(), PushError> {
@@ -157,13 +151,13 @@ impl<'a, 'b, 'c, 'd, D, W: Fn(&mut E, D), E: EntryMarker>
 
         unsafe { self.push_slice_raw(entries) }
     }
+
+    /// # Safety
+    /// The caller must ensure that userdata of all entries are valid and can be understood by rummelplatz.
     #[inline]
     pub unsafe fn push_slice_raw(&mut self, entries: Box<[E]>) -> Result<(), PushError> {
         match self.sq.push_multiple(&entries) {
-            Ok(()) => {
-                *self.inflight_requests += entries.len();
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(e) => match self.backlog_limit {
                 None => {
                     self.backlog.push_back(entries);
@@ -194,9 +188,8 @@ macro_rules! ring {
             use tracing::{debug, error, trace, warn};
             use $crate::io_uring::squeue::PushError;
             use $crate::io_uring::types::Timespec;
+            use $crate::io_uring::squeue::Flags;
             use $crate::{ControlFlow, RingOperation, SubmissionQueueSubmitter};
-
-            const SHUTDOWN_TIMEOUT: Timespec = Timespec::new().sec(5);
 
             // Enforce trait on $ring_op
             const _: () = {
@@ -253,7 +246,6 @@ macro_rules! ring {
             }
 
             pub struct Ring {
-                inflight_requests: usize,
                 ring: $crate::io_uring::IoUring,
                 backlog: VecDeque<Box<[$crate::io_uring::squeue::Entry]>>,
                 backlog_limit: Option<NonZeroUsize>,
@@ -266,13 +258,12 @@ macro_rules! ring {
 
                     if f.alternate() {
                         write!(f, r"Ring: {{
-    inflight_requests: {:#?},
     backlog_limit: {:#?},
     backlog: {:#?},
     operations: {:#?},
-}}", self.inflight_requests, self.backlog_limit, self.backlog, operations)
+}}", self.backlog_limit, self.backlog, operations)
                     } else {
-                        write!(f, r"Ring: {{ inflight_requests: {:?}, backlog_limit: {:?}, backlog: {:?}, operations: {:?} }}", self.inflight_requests, self.backlog_limit, self.backlog, operations)
+                        write!(f, r"Ring: {{ backlog_limit: {:?}, backlog: {:?}, operations: {:?} }}", self.backlog_limit, self.backlog, operations)
                     }
                 }
             }
@@ -290,7 +281,6 @@ macro_rules! ring {
                 #[tracing::instrument(skip_all)]
                 pub fn new(ring: $crate::io_uring::IoUring, backlog_limit: Option<NonZeroUsize>, $($ring_op_name: $ring_op),+) -> Self {
                     Self {
-                        inflight_requests: 0,
                         ring,
                         backlog: Default::default(),
                         backlog_limit,
@@ -314,7 +304,6 @@ macro_rules! ring {
                     let (submit, mut sq, mut cq) = self.ring.split();
 
                     $(if let Err(e) = self.$ring_op_name.setup(SubmissionQueueSubmitter::new(
-                        &mut self.inflight_requests,
                         &mut sq,
                         &mut self.backlog,
                         self.backlog_limit,
@@ -334,16 +323,11 @@ macro_rules! ring {
                                     self.backlog.push_front(entries);
                                     break;
                                 }
-                                self.inflight_requests += entries.len();
                             }
 
                             cq.sync();
                             'completion_loop: for cqe in cq.by_ref() {
                                 trace!("> CQE: {cqe:?}");
-                                if !$crate::io_uring::cqueue::more(cqe.flags()) {
-                                    self.inflight_requests -= 1;
-                                }
-
                                 if cqe.user_data() == 0 {
                                     trace!("dropped {cqe:?}");
 
@@ -359,7 +343,6 @@ macro_rules! ring {
                                             cqe,
                                             data,
                                             SubmissionQueueSubmitter::new(
-                                                &mut self.inflight_requests,
                                                 &mut sq,
                                                 &mut self.backlog,
                                                 self.backlog_limit, |e, d| Self::sqe_wrapper(e, UserData::$ring_op_name(d)),
@@ -398,15 +381,12 @@ macro_rules! ring {
                             .user_data(0);
                         sq.push(&cancel)?;
 
-                        let cancel_timeout = match self.inflight_requests {
-                            0 => $crate::io_uring::opcode::Nop::new().build(),
-                            n => $crate::io_uring::opcode::Timeout::new(&SHUTDOWN_TIMEOUT)
-                                    .count(n as u32)
-                                    .build()
-                        }.user_data(UserData::Cancel(u64::MAX).into());
+                        let cancel_timeout = $crate::io_uring::opcode::Nop::new()
+                            .build()
+                            .flags(Flags::IO_DRAIN)
+                            .user_data(UserData::Cancel(u64::MAX).into());
 
                         sq.push(&cancel_timeout)?;
-                        self.inflight_requests += 2;
                     }
 
                     unsafe {
@@ -417,10 +397,6 @@ macro_rules! ring {
                             cq.sync();
                             for cqe in cq.by_ref() {
                                 trace!("> CQE: {cqe:?}");
-                                if !$crate::io_uring::cqueue::more(cqe.flags()) {
-                                    self.inflight_requests -= 1;
-                                }
-
                                 if cqe.user_data() == 0 {
                                     trace!("dropped {cqe:?}");
 
@@ -432,7 +408,6 @@ macro_rules! ring {
                                 trace!("> CQE userdata: {user_data:?}");
                                 let teardown_result = match *user_data {
                                     $(UserData::$ring_op_name(data) => self.$ring_op_name.on_teardown_completion(cqe, data, SubmissionQueueSubmitter::new(
-                                        &mut self.inflight_requests,
                                         &mut sq,
                                         &mut self.backlog,
                                         self.backlog_limit,

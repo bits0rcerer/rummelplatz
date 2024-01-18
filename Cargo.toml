@@ -6,7 +6,7 @@ description = "A low level library to interact with the io-uring api"
 
 [dependencies]
 tracing = "0.1.40"
-io-uring = { git = "https://github.com/bits0rcerer/io-uring", branch = "msg_ring_pass_flags" }
+io-uring = "0.6.2"
 take_mut = "0.2.2"
 thiserror = "1.0.51"
 

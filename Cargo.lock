@@ -17,7 +17,8 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 [[package]]
 name = "io-uring"
 version = "0.6.2"
-source = "git+https://github.com/bits0rcerer/io-uring?branch=msg_ring_pass_flags#249186f4a5e8266134aba2e5f6eb11d6fd744b5f"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "460648e47a07a43110fbfa2e0b14afb2be920093c31e5dccc50e49568e099762"
 dependencies = [
  "bitflags",
  "libc",
